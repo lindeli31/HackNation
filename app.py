@@ -1,33 +1,48 @@
 """
-Photo-to-Video AI Animation - FULL VIDEO VERSION
-Genera video veri da foto con Imagen 3 / Veo 2
+Photo-to-Video AI - VEO 2 VERSION
+Genera VIDEO VERI animati usando Veo 2 da Vertex AI
 
-IMPORTANTE: Questa versione genera VIDEO VERI, non solo storyboard!
+IMPORTANTE: Questa versione usa Veo 2 per generare video animati reali!
 """
 
 import os
 import json
 import time
-import base64
 from pathlib import Path
 from typing import List, Dict, Optional
 import tempfile
-import io
 
 import streamlit as st
 from PIL import Image
 import numpy as np
+
+# Google AI
 import google.generativeai as genai
+
+# Vertex AI per Veo 2
+try:
+    from google.cloud import aiplatform
+    from google.cloud.aiplatform import gapic
+    VERTEX_AVAILABLE = True
+except ImportError:
+    VERTEX_AVAILABLE = False
+    st.warning("⚠️ google-cloud-aiplatform non installato. Aggiungi a requirements.txt")
 
 # ============================================================================
 # CONFIGURAZIONE
 # ============================================================================
 
+# API Keys
 try:
     GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"]
+    GCP_PROJECT_ID = st.secrets.get("GCP_PROJECT_ID", "")
+    GCP_LOCATION = st.secrets.get("GCP_LOCATION", "us-central1")
 except:
     GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
+    GCP_PROJECT_ID = os.getenv('GCP_PROJECT_ID', '')
+    GCP_LOCATION = os.getenv('GCP_LOCATION', 'us-central1')
 
+# Folders
 UPLOAD_FOLDER = Path(tempfile.gettempdir()) / "photo_video_uploads"
 OUTPUT_FOLDER = Path(tempfile.gettempdir()) / "photo_video_outputs"
 TEMP_FOLDER = Path(tempfile.gettempdir()) / "photo_video_temp"
@@ -35,33 +50,53 @@ TEMP_FOLDER = Path(tempfile.gettempdir()) / "photo_video_temp"
 for folder in [UPLOAD_FOLDER, OUTPUT_FOLDER, TEMP_FOLDER]:
     folder.mkdir(exist_ok=True, parents=True)
 
+# Video settings
 MIN_PHOTOS = 3
-MAX_PHOTOS = 5
-CLIP_DURATION = 5  # Secondi per clip (Imagen 3 supporta 5s)
-VIDEO_FPS = 24  # Frame per second
+MAX_PHOTOS = 8  # Veo 2 può usare più foto per storia più ricca
+CLIP_DURATION = 5  # Veo 2 genera 5 secondi
+VIDEO_FPS = 24
 
 STYLE_PRESETS = {
-    "Cinematic Adventure": "Epic cinematic style with dramatic camera movements, adventure theme, movie-like quality",
-    "Dreamy Memories": "Soft, nostalgic atmosphere with gentle movements, warm colors, emotional storytelling",
-    "Urban Exploration": "Modern urban vibes, street photography aesthetic, dynamic city energy",
-    "Nature Journey": "Natural documentary style, serene landscapes, organic flowing movements",
-    "Artistic Abstract": "Creative artistic interpretation, bold movements, experimental visual style"
+    "Cinematic Adventure": "Epic cinematic adventure with dramatic camera movements and heroic atmosphere",
+    "Dreamy Memories": "Soft dreamy memories with gentle movements and nostalgic warm atmosphere",
+    "Urban Journey": "Modern urban exploration with dynamic street energy and city vibes",
+    "Nature Documentary": "Natural documentary style with serene landscapes and organic flow",
+    "Artistic Story": "Creative artistic narrative with bold experimental visual storytelling"
 }
 
 # ============================================================================
-# SETUP API
+# SETUP APIs
 # ============================================================================
 
 def setup_gemini_api():
-    """Inizializza Gemini API."""
+    """Setup Gemini per storyboarding."""
     if not GEMINI_API_KEY:
-        st.error("❌ GEMINI_API_KEY non trovata!")
+        st.error("❌ GEMINI_API_KEY mancante!")
         return False
     try:
         genai.configure(api_key=GEMINI_API_KEY)
         return True
     except Exception as e:
-        st.error(f"❌ Errore: {str(e)}")
+        st.error(f"❌ Gemini error: {e}")
+        return False
+
+def setup_vertex_ai():
+    """Setup Vertex AI per Veo 2."""
+    if not GCP_PROJECT_ID:
+        st.error("❌ GCP_PROJECT_ID mancante! Serve per Veo 2")
+        st.info("Aggiungi a secrets.toml: GCP_PROJECT_ID = 'your-project-id'")
+        return False
+
+    if not VERTEX_AVAILABLE:
+        st.error("❌ google-cloud-aiplatform non installato")
+        return False
+
+    try:
+        aiplatform.init(project=GCP_PROJECT_ID, location=GCP_LOCATION)
+        st.success(f"✅ Vertex AI setup: {GCP_PROJECT_ID} @ {GCP_LOCATION}")
+        return True
+    except Exception as e:
+        st.error(f"❌ Vertex AI error: {e}")
         return False
 
 def save_uploaded_file(uploaded_file, save_path: Path) -> bool:
@@ -71,53 +106,75 @@ def save_uploaded_file(uploaded_file, save_path: Path) -> bool:
             f.write(uploaded_file.getbuffer())
         return True
     except Exception as e:
-        st.error(f"❌ Errore salvataggio: {str(e)}")
+        st.error(f"❌ Error: {e}")
         return False
 
 # ============================================================================
-# STORYBOARD con Gemini
+# STEP 1: STORIA con Gemini (descrizione narrativa lunga)
 # ============================================================================
 
-def create_storyboard(photo_paths: List[Path], style: str) -> Dict:
-    """Genera storyboard con Gemini 2.5 Pro."""
+def create_story_from_photos(photo_paths: List[Path], style: str) -> Dict:
+    """
+    Usa Gemini per creare una STORIA NARRATIVA dalle foto.
+
+    Non solo storyboard tecnico, ma vera storia con:
+    - Descrizione dettagliata di ogni scena
+    - Connessioni narrative tra le foto
+    - Prompts ricchi per Veo 2
+    """
     try:
-        st.info("🎬 Creando storyboard con Gemini...")
+        st.info("📖 Gemini sta creando la tua storia...")
 
         model = genai.GenerativeModel('gemini-2.5-pro')
 
-        prompt = f"""Create a cinematic storyboard for {len(photo_paths)} photos.
+        prompt = f"""Sei uno storyteller cinematografico. Analizza queste {len(photo_paths)} foto e crea una STORIA NARRATIVA coinvolgente.
 
-Style: {style}
-Description: {STYLE_PRESETS.get(style, style)}
+Stile: {style}
+Descrizione stile: {STYLE_PRESETS.get(style, style)}
 
-For each photo, describe:
-1. Camera movement (dolly, pan, zoom, parallax)
-2. Motion intensity (subtle/moderate/dramatic)
-3. Scene description
+Per ogni foto, crea:
+1. **Descrizione scena dettagliata** (3-4 frasi): Cosa succede, atmosfera, emozioni
+2. **Video prompt ricco** per AI video generation: Descrivi movimenti camera, azione, dettagli visivi
+3. **Connessione narrativa** con scena precedente/successiva
+
+Crea una storia che LEGA tutte le foto in un video continuo e fluido.
 
 Return ONLY valid JSON:
 {{
-    "title": "Video title",
-    "theme": "Overall theme",
-    "shots": [
+    "title": "Titolo creativo del video",
+    "story_summary": "Riassunto storia completa in 2-3 frasi",
+    "narrative_arc": "Tipo di arco narrativo (e.g., 'journey', 'transformation', 'discovery')",
+    "scenes": [
         {{
             "photo_index": 0,
-            "caption": "Scene description",
-            "motion": "Camera movement type",
-            "motion_prompt": "Detailed prompt for video generation (e.g., 'slow dolly zoom in on mountain peaks, cinematic')",
-            "duration": {CLIP_DURATION}
+            "scene_title": "Titolo scena",
+            "description": "Descrizione dettagliata cosa succede in questa scena (3-4 frasi)",
+            "veo_prompt": "Prompt DETTAGLIATO per Veo 2 video generation - include: azione, movimento camera, atmosfera, dettagli visivi, stile cinematografico. Min 20 parole.",
+            "camera_movement": "Tipo movimento (dolly, pan, tilt, zoom, orbit)",
+            "duration": {CLIP_DURATION},
+            "transition_to_next": "Come questa scena si collega alla prossima"
         }}
-    ]
-}}"""
+    ],
+    "final_message": "Messaggio/emozione finale del video"
+}}
 
-        # Carica immagini
+IMPORTANTE:
+- Veo prompts devono essere MOLTO DETTAGLIATI (20+ parole)
+- Includi sempre: movimento camera, azione, atmosfera
+- Usa linguaggio cinematografico
+"""
+
+        # Carica foto per Gemini
         images = []
         for photo_path in photo_paths:
             img = Image.open(photo_path)
             img.thumbnail((1024, 1024))
             images.append(img)
 
-        response = model.generate_content([prompt] + images)
+        # Chiamata Gemini
+        with st.spinner("🤖 Gemini sta analizzando le foto e creando la storia..."):
+            response = model.generate_content([prompt] + images)
+
         response_text = response.text
 
         # Parse JSON
@@ -126,157 +183,202 @@ Return ONLY valid JSON:
         elif "```" in response_text:
             response_text = response_text.split("```")[1].split("```")[0]
 
-        storyboard = json.loads(response_text.strip())
-        st.success(f"✅ Storyboard: '{storyboard.get('title', 'Untitled')}'")
+        story = json.loads(response_text.strip())
 
-        return storyboard
+        st.success(f"✅ Storia creata: '{story.get('title', 'Untitled')}'")
 
+        return story
+
+    except json.JSONDecodeError as e:
+        st.error(f"❌ JSON parse error: {e}")
+        st.code(response_text[:500])
+        return create_fallback_story(photo_paths, style)
     except Exception as e:
-        st.error(f"❌ Errore storyboard: {str(e)}")
-        return create_fallback_storyboard(photo_paths, style)
+        st.error(f"❌ Story generation error: {e}")
+        return create_fallback_story(photo_paths, style)
 
-def create_fallback_storyboard(photo_paths: List[Path], style: str) -> Dict:
-    """Storyboard fallback."""
-    shots = []
-    motions = ["slow zoom in", "pan right", "dolly forward", "gentle tilt up", "parallax effect"]
+def create_fallback_story(photo_paths: List[Path], style: str) -> Dict:
+    """Fallback story se Gemini fallisce."""
+    scenes = []
 
     for i, photo_path in enumerate(photo_paths):
-        motion = motions[i % len(motions)]
-        shots.append({
+        scenes.append({
             "photo_index": i,
-            "caption": f"Scene {i+1}",
-            "motion": motion,
-            "motion_prompt": f"{motion}, cinematic, {style.lower()} style",
-            "duration": CLIP_DURATION
+            "scene_title": f"Scene {i+1}",
+            "description": f"A {style.lower()} scene captured in this moment",
+            "veo_prompt": f"Cinematic {style.lower()} scene with smooth camera movement, professional cinematography, high quality, dramatic lighting",
+            "camera_movement": "dolly forward",
+            "duration": CLIP_DURATION,
+            "transition_to_next": "Flows naturally into next scene"
         })
 
     return {
         "title": f"My {style} Story",
-        "theme": f"A {style.lower()} journey",
-        "shots": shots
+        "story_summary": f"A {style.lower()} journey through captured moments",
+        "narrative_arc": "journey",
+        "scenes": scenes,
+        "final_message": "A memorable journey"
     }
 
 # ============================================================================
-# VIDEO GENERATION con Imagen 3
+# STEP 2: VIDEO GENERATION con Veo 2
 # ============================================================================
 
-def generate_video_clip_imagen3(photo_path: Path, shot_info: Dict, style: str) -> Optional[Path]:
+def generate_video_with_veo2(photo_path: Path, scene: Dict, style: str) -> Optional[Path]:
     """
-    Genera video clip usando Imagen 3.
+    Genera VIDEO ANIMATO usando Veo 2 da Vertex AI.
 
-    Imagen 3 può generare video brevi (3-5s) da immagini.
+    Veo 2 genera video veri con movimento, non foto statiche!
+
+    Args:
+        photo_path: Foto di riferimento
+        scene: Dati scena con veo_prompt
+        style: Stile video
+
+    Returns:
+        Path al video generato (MP4)
     """
     try:
-        st.info(f"🎥 Generando video per: {shot_info['caption'][:50]}...")
+        st.info(f"🎥 Veo 2 sta generando video per: {scene['scene_title']}")
 
-        # Prepara prompt per Imagen 3
-        motion_prompt = shot_info.get('motion_prompt', shot_info.get('motion', 'slow zoom'))
-        full_prompt = f"{motion_prompt}. {STYLE_PRESETS.get(style, '')}. Smooth animation, high quality, cinematic."
+        # Prepara prompt per Veo 2
+        veo_prompt = scene.get('veo_prompt', scene.get('description', ''))
 
-        # Carica immagine
-        img = Image.open(photo_path)
+        # Arricchisci prompt con stile
+        full_prompt = f"{veo_prompt}. Style: {STYLE_PRESETS.get(style, style)}. Cinematic quality, smooth motion, {scene.get('camera_movement', 'slow movement')}"
 
-        # Usa Imagen 3 per video generation
-        model = genai.GenerativeModel('gemini-2.5-pro')  # Cambieremo con Imagen 3 quando l'API è disponibile
+        st.write(f"📝 Prompt Veo: {full_prompt[:100]}...")
 
-        # NOTA: L'API Imagen 3 video non è ancora pubblica
-        # Per ora usiamo una simulazione che crea un video da foto statica
-        # Quando Imagen 3 video sarà disponibile, sostituiremo con:
-        # model = genai.ImageModel('imagen-3-video')
-        # video = model.generate_video(image=img, prompt=full_prompt, duration=CLIP_DURATION)
+        # Carica immagine di riferimento
+        with open(photo_path, "rb") as f:
+            image_bytes = f.read()
 
-        st.warning("⚠️ Imagen 3 video API non ancora disponibile - usando fallback")
+        # CHIAMA VEO 2 API via Vertex AI
+        # Documentazione: https://cloud.google.com/vertex-ai/docs/generative-ai/video/generate-videos
 
-        # Fallback: crea video dalla foto statica con duplicazione frame
-        output_path = create_simple_video_from_image(photo_path, shot_info['duration'])
+        client = aiplatform.gapic.PredictionServiceClient(
+            client_options={"api_endpoint": f"{GCP_LOCATION}-aiplatform.googleapis.com"}
+        )
 
-        if output_path:
-            st.success(f"✅ Clip generato: {output_path.name}")
-            return output_path
+        # Endpoint Veo 2
+        endpoint = f"projects/{GCP_PROJECT_ID}/locations/{GCP_LOCATION}/publishers/google/models/veo-2"
+
+        # Prepara richiesta
+        import base64
+        image_b64 = base64.b64encode(image_bytes).decode('utf-8')
+
+        instances = [{
+            "prompt": full_prompt,
+            "reference_image": {
+                "bytesBase64Encoded": image_b64
+            },
+            "parameters": {
+                "duration": f"{CLIP_DURATION}s",
+                "aspectRatio": "16:9",
+                "fps": VIDEO_FPS
+            }
+        }]
+
+        # Esegui predizione
+        with st.spinner(f"⏳ Veo 2 sta generando video... (~30-60s)"):
+            response = client.predict(
+                endpoint=endpoint,
+                instances=instances
+            )
+
+        # Estrai video generato
+        if response.predictions:
+            prediction = response.predictions[0]
+
+            # Veo ritorna video in base64
+            video_b64 = prediction.get('videoBase64', '')
+            if video_b64:
+                video_bytes = base64.b64decode(video_b64)
+
+                # Salva video
+                output_path = TEMP_FOLDER / f"veo_clip_{int(time.time())}_{scene['photo_index']}.mp4"
+                with open(output_path, "wb") as f:
+                    f.write(video_bytes)
+
+                st.success(f"✅ Video generato: {output_path.name} ({len(video_bytes) / 1024 / 1024:.1f} MB)")
+                return output_path
+            else:
+                st.error("❌ Veo non ha ritornato video")
+                return None
         else:
+            st.error("❌ Nessuna prediction da Veo")
             return None
 
     except Exception as e:
-        st.error(f"❌ Errore generazione video: {str(e)}")
-        return create_simple_video_from_image(photo_path, shot_info['duration'])
+        st.error(f"❌ Veo 2 generation failed: {e}")
+        st.info("💡 Possibili cause: Quota API, Veo non abilitato, credenziali errate")
 
-def create_simple_video_from_image(image_path: Path, duration: int) -> Optional[Path]:
-    """
-    Crea un video semplice da un'immagine statica.
-    Fallback quando Imagen 3 non è disponibile.
+        # Fallback: crea clip semplice con FFmpeg
+        return create_simple_clip_ffmpeg(photo_path, scene)
 
-    Usa ffmpeg se disponibile, altrimenti crea slideshow.
-    """
+def create_simple_clip_ffmpeg(photo_path: Path, scene: Dict) -> Optional[Path]:
+    """Fallback: clip semplice con FFmpeg se Veo fallisce."""
     try:
         import subprocess
 
-        output_path = TEMP_FOLDER / f"clip_{image_path.stem}_{int(time.time())}.mp4"
+        st.warning("⚠️ Usando FFmpeg fallback (foto statica)")
 
-        # Prova con ffmpeg (se installato)
-        try:
-            # Comando ffmpeg per creare video da immagine
-            cmd = [
-                'ffmpeg',
-                '-y',  # Overwrite
-                '-loop', '1',  # Loop immagine
-                '-i', str(image_path),  # Input
-                '-c:v', 'libx264',  # Codec
-                '-t', str(duration),  # Durata
-                '-pix_fmt', 'yuv420p',  # Formato pixel
-                '-vf', 'scale=1280:720',  # Ridimensiona
-                str(output_path)
-            ]
+        output_path = TEMP_FOLDER / f"clip_{int(time.time())}_{scene['photo_index']}.mp4"
 
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        # FFmpeg: foto → video con zoom
+        cmd = [
+            'ffmpeg', '-y',
+            '-loop', '1',
+            '-i', str(photo_path),
+            '-vf', f'scale=1280:720,zoompan=z=\'min(zoom+0.0015,1.5)\':d={CLIP_DURATION * VIDEO_FPS}:s=1280x720',
+            '-t', str(scene['duration']),
+            '-c:v', 'libx264',
+            '-pix_fmt', 'yuv420p',
+            '-r', str(VIDEO_FPS),
+            str(output_path)
+        ]
 
-            if result.returncode == 0 and output_path.exists():
-                return output_path
-            else:
-                st.warning("⚠️ FFmpeg non disponibile - usando metodo alternativo")
-                return None
+        subprocess.run(cmd, capture_output=True, check=True, timeout=60)
 
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            st.warning("⚠️ FFmpeg non installato - impossibile generare video")
-            st.info("💡 Per video veri, installa FFmpeg su Streamlit Cloud (packages.txt)")
-            return None
+        if output_path.exists():
+            return output_path
+        return None
 
     except Exception as e:
-        st.error(f"❌ Errore creazione video: {str(e)}")
+        st.error(f"❌ FFmpeg fallback failed: {e}")
         return None
 
 # ============================================================================
-# VIDEO MERGING
+# STEP 3: MERGE VIDEO
 # ============================================================================
 
-def merge_video_clips(clip_paths: List[Path], storyboard: Dict, output_name: str) -> Optional[Path]:
-    """
-    Merge video clips in un unico video usando ffmpeg.
-    """
+def merge_videos_ffmpeg(video_paths: List[Path], story: Dict) -> Optional[Path]:
+    """Merge tutti i clip in video continuo."""
     try:
         import subprocess
 
-        st.info("🎬 Merging video clips...")
+        st.info("🎬 Merging video clips in video continuo...")
 
-        # Filtra solo clip validi
-        valid_clips = [p for p in clip_paths if p and p.exists()]
+        # Filtra clip validi
+        valid_clips = [p for p in video_paths if p and p.exists()]
 
         if not valid_clips:
-            st.error("❌ Nessun clip valido da mergare")
+            st.error("❌ Nessun clip da mergare")
             return None
 
-        # Crea file list per ffmpeg concat
-        concat_file = TEMP_FOLDER / "concat_list.txt"
+        # Crea concat list
+        concat_file = TEMP_FOLDER / "concat.txt"
         with open(concat_file, "w") as f:
-            for clip_path in valid_clips:
-                f.write(f"file '{clip_path.absolute()}'\n")
+            for clip in valid_clips:
+                f.write(f"file '{clip.absolute()}'\n")
 
-        # Output path
-        output_path = OUTPUT_FOLDER / f"{output_name}.mp4"
+        # Output
+        title_safe = story.get('title', 'video').replace(' ', '_')[:30]
+        output_path = OUTPUT_FOLDER / f"{title_safe}_{int(time.time())}.mp4"
 
-        # Comando ffmpeg per concat
+        # Merge con crossfade
         cmd = [
-            'ffmpeg',
-            '-y',
+            'ffmpeg', '-y',
             '-f', 'concat',
             '-safe', '0',
             '-i', str(concat_file),
@@ -284,99 +386,100 @@ def merge_video_clips(clip_paths: List[Path], storyboard: Dict, output_name: str
             str(output_path)
         ]
 
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        with st.spinner("⏳ Merging... (~30s)"):
+            subprocess.run(cmd, capture_output=True, check=True, timeout=120)
 
-        if result.returncode == 0 and output_path.exists():
-            st.success(f"✅ Video finale creato: {output_path.name}")
+        if output_path.exists():
+            file_size = output_path.stat().st_size / 1024 / 1024
+            st.success(f"✅ Video finale: {output_path.name} ({file_size:.1f} MB)")
             return output_path
-        else:
-            st.error(f"❌ Errore merge: {result.stderr}")
-            return None
 
-    except FileNotFoundError:
-        st.error("❌ FFmpeg non trovato! Necessario per merge video.")
-        st.info("💡 Aggiungi 'ffmpeg' in packages.txt per Streamlit Cloud")
         return None
+
     except Exception as e:
-        st.error(f"❌ Errore merge: {str(e)}")
+        st.error(f"❌ Merge failed: {e}")
         return None
 
 # ============================================================================
 # MAIN PIPELINE
 # ============================================================================
 
-def process_photos_to_video(photo_paths: List[Path], style: str, session_id: str) -> Optional[Path]:
-    """
-    Pipeline completa: foto → storyboard → video clips → merge → MP4 finale
-    """
+def process_photos_to_video(photo_paths: List[Path], style: str) -> Optional[Path]:
+    """Pipeline completa."""
     try:
         progress = st.progress(0)
-        status = st.empty()
 
-        # Step 1: Storyboard
-        status.text("🎬 Step 1/3: Creando storyboard...")
+        # Step 1: Storia
+        st.header("📖 Step 1: Creazione Storia")
         progress.progress(0.1)
 
-        storyboard = create_storyboard(photo_paths, style)
+        story = create_story_from_photos(photo_paths, style)
 
-        if not storyboard or 'shots' not in storyboard:
-            st.error("❌ Fallimento storyboard")
+        if not story or 'scenes' not in story:
+            st.error("❌ Storia fallita")
             return None
 
-        # Mostra storyboard
-        st.subheader(f"📋 {storyboard.get('title', 'Storyboard')}")
-        st.write(f"*{storyboard.get('theme', '')}*")
+        # Mostra storia
+        st.subheader(f"🎬 {story['title']}")
+        st.write(f"**Tema:** {story.get('story_summary', '')}")
+        st.write(f"**Arco narrativo:** {story.get('narrative_arc', 'journey')}")
 
-        with st.expander("Dettagli Scene", expanded=False):
-            for i, shot in enumerate(storyboard['shots']):
-                st.write(f"**Scena {i+1}:** {shot.get('caption', 'N/A')}")
-                st.write(f"- Motion: {shot.get('motion', 'N/A')}")
+        with st.expander("📋 Scene Dettagliate", expanded=True):
+            for i, scene in enumerate(story['scenes']):
+                st.markdown(f"""
+**Scena {i+1}: {scene.get('scene_title', 'Untitled')}**
+
+📝 **Descrizione:** {scene.get('description', 'N/A')}
+
+🎥 **Camera:** {scene.get('camera_movement', 'N/A')}
+
+🔗 **Transizione:** {scene.get('transition_to_next', 'N/A')}
+                """)
 
         progress.progress(0.3)
 
-        # Step 2: Genera video clips
-        status.text("🎥 Step 2/3: Generando video clips...")
+        # Step 2: Video generation
+        st.header("🎥 Step 2: Generazione Video con Veo 2")
 
-        generated_clips = []
+        generated_videos = []
 
-        for i, shot in enumerate(storyboard['shots']):
-            photo_idx = shot.get('photo_index', i)
+        for i, scene in enumerate(story['scenes']):
+            photo_idx = scene.get('photo_index', i)
 
             if photo_idx >= len(photo_paths):
                 photo_idx = i % len(photo_paths)
 
             photo_path = photo_paths[photo_idx]
 
-            st.write(f"🎬 Generando clip {i+1}/{len(storyboard['shots'])}...")
+            st.write(f"🎬 Generando scena {i+1}/{len(story['scenes'])}: {scene['scene_title']}")
 
-            clip_path = generate_video_clip_imagen3(photo_path, shot, style)
+            video_path = generate_video_with_veo2(photo_path, scene, style)
 
-            if clip_path:
-                generated_clips.append(clip_path)
+            if video_path:
+                generated_videos.append(video_path)
+                st.success(f"✅ Scena {i+1} completata")
             else:
-                st.warning(f"⚠️ Clip {i+1} fallito - continuo comunque")
+                st.warning(f"⚠️ Scena {i+1} fallita - continuo")
 
-            progress.progress(0.3 + (0.5 * (i+1) / len(storyboard['shots'])))
+            progress.progress(0.3 + (0.5 * (i+1) / len(story['scenes'])))
 
-        if not generated_clips:
-            st.error("❌ Nessun clip generato")
+        if not generated_videos:
+            st.error("❌ Nessun video generato")
             return None
 
         progress.progress(0.8)
 
         # Step 3: Merge
-        status.text("🎬 Step 3/3: Creando video finale...")
+        st.header("🎬 Step 3: Creazione Video Finale")
 
-        output_name = f"{session_id}_{storyboard.get('title', 'video').replace(' ', '_')}"
-        final_video = merge_video_clips(generated_clips, storyboard, output_name)
+        final_video = merge_videos_ffmpeg(generated_videos, story)
 
         progress.progress(1.0)
-        status.text("✅ Completato!")
 
         return final_video
 
     except Exception as e:
-        st.error(f"❌ Errore pipeline: {str(e)}")
+        st.error(f"❌ Pipeline error: {e}")
         import traceback
         st.code(traceback.format_exc())
         return None
@@ -387,48 +490,56 @@ def process_photos_to_video(photo_paths: List[Path], style: str, session_id: str
 
 def main():
     st.set_page_config(
-        page_title="Photo to Video AI - FULL VERSION",
+        page_title="Photo to Video AI - Veo 2",
         page_icon="🎬",
         layout="wide"
     )
 
-    st.title("🎬 Photo-to-Video AI - VIDEO COMPLETO")
-    st.markdown("**Genera VIDEO VERI da foto con AI! 🎥**")
+    st.title("🎬 Photo-to-Video AI - Powered by Veo 2")
+    st.markdown("**Crea VIDEO ANIMATI da foto con AI! 🎥**")
 
     # Sidebar
     with st.sidebar:
         st.header("ℹ️ Info")
         st.write("""
-        **Versione COMPLETA:**
-        - Genera video veri (non solo storyboard)
-        - Merge automatico dei clip
-        - Download MP4 finale
+        **Tecnologie:**
+        - Gemini 2.5 Pro (storytelling)
+        - Veo 2 (video generation)
+        - FFmpeg (merging)
 
-        **Richiede:**
-        - FFmpeg installato
+        **Requirements:**
         - Gemini API key
+        - Google Cloud Project ID
+        - Veo 2 abilitato su Vertex AI
         """)
 
-        if GEMINI_API_KEY:
-            st.success("✅ API Key OK")
-        else:
-            st.error("❌ API Key mancante")
+        st.header("🔑 Status")
 
-        st.header("⚙️ Settings")
-        st.info(f"Clip duration: {CLIP_DURATION}s")
-        st.info(f"Video FPS: {VIDEO_FPS}")
+        if GEMINI_API_KEY:
+            st.success("✅ Gemini OK")
+        else:
+            st.error("❌ Gemini key mancante")
+
+        if GCP_PROJECT_ID:
+            st.success(f"✅ GCP: {GCP_PROJECT_ID}")
+        else:
+            st.error("❌ GCP project mancante")
 
     # Setup
     if not setup_gemini_api():
         st.stop()
 
+    if not setup_vertex_ai():
+        st.warning("⚠️ Vertex AI non configurato - userò fallback FFmpeg")
+
     # Upload
     st.header("📸 Upload Photos")
 
     uploaded_files = st.file_uploader(
-        f"Carica {MIN_PHOTOS}-{MAX_PHOTOS} foto",
+        f"Carica {MIN_PHOTOS}-{MAX_PHOTOS} foto (più foto = storia più ricca!)",
         type=['jpg', 'jpeg', 'png'],
-        accept_multiple_files=True
+        accept_multiple_files=True,
+        help="Veo 2 può usare fino a 8 foto per creare storie complesse"
     )
 
     if uploaded_files:
@@ -438,60 +549,54 @@ def main():
             st.warning(f"⚠️ Max {MAX_PHOTOS} foto")
             uploaded_files = uploaded_files[:MAX_PHOTOS]
         else:
-            st.success(f"✅ {len(uploaded_files)} foto ready!")
+            st.success(f"✅ {len(uploaded_files)} foto - ottimo per storia ricca!")
 
     # Preview
     if uploaded_files:
-        cols = st.columns(min(len(uploaded_files), 5))
+        cols = st.columns(min(len(uploaded_files), 4))
         for idx, (col, file) in enumerate(zip(cols, uploaded_files)):
             with col:
-                img = Image.open(file)
-                st.image(img, caption=f"#{idx+1}", use_container_width=True)
+                st.image(Image.open(file), caption=f"#{idx+1}", use_container_width=True)
 
     # Style
     st.header("🎨 Style")
-    style = st.selectbox("Stile video", list(STYLE_PRESETS.keys()))
-
-    if style:
-        st.info(STYLE_PRESETS[style])
+    style = st.selectbox("Stile narrativo", list(STYLE_PRESETS.keys()))
 
     # Generate
-    st.header("🚀 Generate Video")
+    st.header("🚀 Generate")
 
-    if st.button("✨ Genera Video Completo! ✨", type="primary", use_container_width=True):
+    if st.button("✨ Crea Video con Veo 2! ✨", type="primary", use_container_width=True):
 
         if not uploaded_files or len(uploaded_files) < MIN_PHOTOS:
-            st.error("❌ Carica almeno 3 foto!")
+            st.error(f"❌ Carica almeno {MIN_PHOTOS} foto!")
             st.stop()
 
-        # Salva foto
-        st.info("💾 Salvando foto...")
+        # Save photos
         photo_paths = []
-        session_id = f"video_{int(time.time())}"
+        session_id = int(time.time())
 
         for idx, file in enumerate(uploaded_files):
-            save_path = UPLOAD_FOLDER / f"{session_id}_photo_{idx}.jpg"
+            save_path = UPLOAD_FOLDER / f"{session_id}_{idx}.jpg"
             if save_uploaded_file(file, save_path):
                 photo_paths.append(save_path)
 
-        if len(photo_paths) != len(uploaded_files):
+        if not photo_paths:
             st.error("❌ Errore salvataggio")
             st.stop()
 
-        # Genera video
+        # Process
         st.balloons()
-        st.success("🎥 Generando il tuo video...")
 
-        with st.spinner("🎬 Processando... può richiedere alcuni minuti"):
-            final_video = process_photos_to_video(photo_paths, style, session_id)
+        with st.spinner("🎬 Generando video con Veo 2... (5-10 minuti)"):
+            final_video = process_photos_to_video(photo_paths, style)
 
-        # Risultato
+        # Result
         if final_video and final_video.exists():
             st.success("🎉 VIDEO PRONTO!")
 
             st.header("🎬 Il Tuo Video")
 
-            # Mostra video
+            # Player
             with open(final_video, "rb") as f:
                 video_bytes = f.read()
 
@@ -509,24 +614,11 @@ def main():
             st.balloons()
 
         else:
-            st.error("❌ Generazione video fallita")
-            st.info("""
-            **Possibili cause:**
-            - FFmpeg non installato
-            - Imagen 3 API non disponibile
-            - Quota API esaurita
-
-            **Soluzione:**
-            Aggiungi `packages.txt` con:
-            ```
-            ffmpeg
-            ```
-            E redeploy su Streamlit Cloud
-            """)
+            st.error("❌ Generazione fallita - controlla setup Veo 2")
 
     # Footer
     st.markdown("---")
-    st.markdown("*Photo-to-Video AI | HackNation 2025*")
+    st.markdown("*Powered by Veo 2 + Gemini 2.5 Pro | HackNation 2025*")
 
 if __name__ == "__main__":
     main()
